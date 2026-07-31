@@ -1,14 +1,15 @@
 """
 Gradio demo for the fine-tuned Text-to-SQL model.
-Deploy this as a HuggingFace Space (SDK: Gradio) -- see the accompanying
-requirements.txt.
+Deploy this on Render.com (free tier, Docker) -- see the accompanying
+Dockerfile and requirements.txt.
 
-Runs on CPU (Spaces' free tier has no GPU, and bitsandbytes 4-bit quantization
+Runs on CPU (no GPU on Render's free tier, and bitsandbytes 4-bit quantization
 is GPU-only), so the adapter is merged into the base model once at startup and
 run in plain float32 -- a bit slower per query than the T4 we trained on, but
 fine for a demo where someone tries a handful of questions.
 """
 
+import os
 import re
 import random
 import sqlite3
@@ -19,7 +20,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 BASE_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-ADAPTER_ID = "Harsh3567475586/qwen2.5-1.5b-text-to-sql-lora"  # <-- set after running 04_push_adapter.py
+ADAPTER_ID = "Harsh3567475586/qwen2.5-1.5b-text-to-sql-lora"
 
 SYSTEM_PROMPT = (
     "You are a precise text-to-SQL assistant. Given a database schema and a "
@@ -27,17 +28,14 @@ SYSTEM_PROMPT = (
     "No explanation, no markdown, just the query."
 )
 
-print("Loading model (first load takes ~30-60s on Spaces' free CPU tier)...")
+print("Loading model (first load takes ~30-60s)...")
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID)
 base_model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_ID, torch_dtype=torch.float32)
 model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
-model = model.merge_and_unload()   # bake LoRA weights in -- one standalone model, no PEFT needed at inference
+model = model.merge_and_unload()
 model.eval()
 print("Model ready.")
 
-# ============================================================
-# Generation (same logic as Phase 3's evaluation script)
-# ============================================================
 def clean_sql(text):
     text = re.sub(r"```sql|```", "", text, flags=re.IGNORECASE).strip()
     if ";" in text:
@@ -61,9 +59,6 @@ def generate_sql(schema, question, max_new_tokens=128):
     gen = out[0][inputs["input_ids"].shape[1]:]
     return clean_sql(tokenizer.decode(gen, skip_special_tokens=True))
 
-# ============================================================
-# Safety layer + synthetic data to actually run the query against
-# ============================================================
 DESTRUCTIVE = re.compile(
     r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|ATTACH|PRAGMA|REPLACE)\b", re.IGNORECASE
 )
@@ -114,9 +109,6 @@ def run_demo(schema, question):
         conn.close()
         return sql, pd.DataFrame({"error": [str(e)]})
 
-# ============================================================
-# UI
-# ============================================================
 EXAMPLE_SCHEMA = "CREATE TABLE employees (name VARCHAR, department VARCHAR, salary INTEGER)"
 EXAMPLE_QUESTION = "What is the average salary in the Engineering department?"
 
@@ -145,4 +137,5 @@ demo = gr.Interface(
 )
 
 if __name__ == "__main__":
-    demo.launch()
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port)
